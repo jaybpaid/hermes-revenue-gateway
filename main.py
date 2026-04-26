@@ -1,13 +1,34 @@
 import os
+import asyncio
+import httpx
+import subprocess
 from fastapi import FastAPI, HTTPException
 from typing import Optional
-import httpx
-import asyncio
 
-app = FastAPI(title="Hermes Revenue Gateway")
+app = FastAPI(title="Hermes Revenue Gateway with Cognee Memory")
 
 APIFY_TOKEN = os.getenv("APIFY_TOKEN")
 ACTOR_MAPPING = {'google-maps': '3UqWSAQ1r03aQgL7T', 'linkedin-profile': 'LB1zjIZesVonP8waB', 'trustpilot': 'byY4mgLT5eGAoYU8c'}
+COGNEE_DIR = "/home/peso/cognee"
+
+async def remember_in_cognee(data: str):
+    """
+    Sends the scraped data to Cognee for indexing using the CLI.
+    """
+    try:
+        # We use 'uv run cognee-cli add' to inject the data into the knowledge graph
+        # We wrap the data in quotes to ensure it's passed as a single string
+        process = await asyncio.create_subprocess_exec(
+            "uv", "run", "cognee-cli", "add", data,
+            cwd=COGNEE_DIR,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        return True
+    except Exception as e:
+        print(f"Cognee Memory Error: {e}")
+        return False
 
 async def run_apify_actor(actor_id: str, input_data: dict):
     url = f"https://api.apify.com/v2/acts/{actor_id}/runs"
@@ -38,11 +59,18 @@ async def run_apify_actor(actor_id: str, input_data: dict):
         dataset_id = status_data["defaultDatasetId"]
         dataset_url = f"https://api.apify.com/v2/datasets/{dataset_id}/items?token={APIFY_TOKEN}"
         results_resp = await client.get(dataset_url)
-        return results_resp.json()
+        results = results_resp.json()
+        
+        # --- COGNEE INTEGRATION ---
+        # Convert results to a string and "remember" them
+        # This happens in the background so we don't delay the user response
+        asyncio.create_task(remember_in_cognee(str(results)))
+        
+        return results
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy"}
+    return {"status": "healthy", "memory": "cognee_active"}
 
 @app.post("/scrape/google-maps")
 async def scrape_google_maps(payload: dict):
